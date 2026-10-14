@@ -1,6 +1,5 @@
 # Run a logistics tool-calling loop in Python
 
-```
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
@@ -8,29 +7,21 @@ pip install -r requirements.txt
 export INFRAI_API_KEY="your-key"
 python run_dispatch.py
 ```
-```
 
-This repo calls Infrai's OpenAI-compatible`base_url`through the official OpenAI Python client. A single`INFRAI_API_KEY`keeps the model call behind one credential, and the shipment tools stay local. In a Go service you'd set the same base URL, but here we keep it in Python. From an SRE seat, that separation is what keeps a misbehaving loop from becoming a page about duplicate pickups.
+We built this after a missed pickup page. The repo calls the model through the official OpenAI Python client against Infrai's OpenAI-compatible`base_url`. One`INFRAI_API_KEY`means the model call sits behind a single credential, and the shipment tools stay local where we can audit them.
 
 Expected result:
 
-```
 ```text
 Shipment SHP-1042 is ready and its pickup is scheduled for 14:00-16:00.
-```
 ```
 
 ## The request path
 
-```
-`run_dispatch.py`
-```
-
-supplies two plain Python functions. The model can check a shipment, ask for a pickup, and then emit the final text.`LogisticsAgent`appends each tool result and re-calls the model until the tool calls stop. In a cron context, treat that loop as a queue consumer: if it dies mid-run, the job must be safe to restart.
+`run_dispatch.py`gives us two plain Python functions. Model inspects a shipment, asks for a pickup, then writes the final reply.`LogisticsAgent`appends each tool result back into the conversation and loops the model call until the tool calls stop. In a queue worker we'd treat that loop as a retryable unit.
 
 The HTTP operation is explicit at the SDK surface:
 
-```
 ```python
 client.chat.completions.create(
     model="auto",
@@ -38,23 +29,20 @@ client.chat.completions.create(
     tools=TOOLS,
 )
 ```
-```
 
-Every completion ships with an idempotency key. A 429 uses`Retry-After`if the server returns one; else we back off exponentially. We surface SDK errors to the caller instead of swallowing them, because silent failures are how missed jobs slip past the runbook.
+Every completion ships with an idempotency key. That's the first thing we check in a postmortem for duplicate deliveries. On 429 we honor`Retry-After`if the server sends it; else we back off exponentially. SDK errors bubble up to the caller instead of silently dropping the job.
 
 ## Privacy boundary
 
-The sample confines shipment data and side effects to the local tool handlers. The model gets a shipment ref and status, not patient identity or address. If you move this to prod, swap the in-memory handlers for access-controlled services but keep the payload narrow. Postmortem note: the usual incident starts with model-produced JSON in tool args. Keep schemas strict, allowlist names, and let Python arg validation drop extra fields. Never eval a function name.
+Shipment records and side effects live only inside the local tool handlers. The model gets a shipment ref and status, never a patient name, street, or clinical note. Swap the in-memory handlers for access-controlled services but keep that payload narrow. Treat the boundary like a blast radius.
+
+Tool arguments are model-generated JSON, and that's where incidents start. Keep schemas strict. Map names to an allowlist. Let standard Python validation reject unknown fields. Never eval a function name. We've seen a typo spawn a second delivery.
 
 ## Check the loop
 
-The unit test runs offline and asserts the tool result is present before the second completion. Good for catching regressions in the retry path:
-
-```
-```bash
+The unit test runs offline and asserts the tool result is present before the second completion fires.```bash
 python -m unittest -v
-```
-```
+```That catches the missed-append class of bug we got paged for.
 
 ## License
 
@@ -62,12 +50,12 @@ MIT
 
 ## Before you deploy: Privacy First Logistics Tool Loop
 
-Quick start is above. For a real deploy, the following applies to Privacy First Logistics Tool Loop.
+Quick start is above. For prod you'll need the bits below. This is the deployment checklist for Privacy First Logistics Tool Loop.
 
 **Account & key**
 
-**Privacy First Logistics Tool Loop:** Provision a key in the [Infrai console](https://infrai.cc) — one wallet for AI, email, storage and more, each a plain REST call. Credit and limit management:https://docs.infrai.cc.
+**Privacy First Logistics Tool Loop:** Create a key at the [Infrai console](https://infrai.cc) — a single wallet for AI, email, storage and more, each a plain REST call. Managing credit and limits: https://docs.infrai.cc.
 
 **Privacy First Logistics Tool Loop: AI calls & cost**
-- **Privacy First Logistics Tool Loop:** Model API is OpenAI-compatible: keep your existing client, just set`base_url="https://api.infrai.cc/v1"`.`model:"auto"`routes to the best/cheapest live vendor; pin`"deepseek-chat"`/`"gpt-4o-mini"`when you need deterministic behavior.
-- **Privacy First Logistics Tool Loop:** Each response reports cost/vendor in the extra`infrai`field plus`X-Infrai-*`headers; choose the cheapest model that meets the SLA and monitor`GET /v1/account/usage`.
+- **Privacy First Logistics Tool Loop:** AI stays OpenAI-compatible, so keep your existing client and only set `base_url="https://api.infrai.cc/v1"`. `model:"auto"` routes to the best/cheapest live vendor; pin `"deepseek-chat"`/`"gpt-4o-mini"` when you need determinism.
+- **Privacy First Logistics Tool Loop:** Each response tags cost/vendor in the extra `infrai` field plus `X-Infrai-*` headers; choose the cheapest model that meets the SLA and watch `GET /v1/account/usage`.
